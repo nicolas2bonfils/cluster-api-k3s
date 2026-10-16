@@ -94,7 +94,7 @@ func TestMatchesKThreesBootstrapConfig(t *testing.T) {
 		kcp := &controlplanev1.KThreesControlPlane{
 			Spec: controlplanev1.KThreesControlPlaneSpec{
 				KThreesConfigSpec: bootstrapv1.KThreesConfigSpec{
-					Files: []bootstrapv1.File{}, // This is a change
+					Files: []bootstrapv1.File{{Path: "/etc/foo"}}, // This is a change
 				},
 			},
 		}
@@ -216,6 +216,35 @@ func TestMatchesKThreesBootstrapConfig(t *testing.T) {
 			match := MatchesKThreesBootstrapConfig(machineConfigs, kcp)(m)
 			g.Expect(match).To(BeFalse())
 		})
+	})
+
+	t.Run("should treat empty and unset lists as equal", func(t *testing.T) {
+		g := NewWithT(t)
+		// The KCP keeps the empty lists as written, while the KThreesConfig created from it
+		// drops them on serialization (omitempty) and reads them back as nil.
+		kcp := &controlplanev1.KThreesControlPlane{
+			Spec: controlplanev1.KThreesControlPlaneSpec{
+				KThreesConfigSpec: bootstrapv1.KThreesConfigSpec{
+					ServerConfig: bootstrapv1.KThreesServerConfig{KubeAPIServerArgs: []string{}},
+					AgentConfig:  bootstrapv1.KThreesAgentConfig{KubeletArgs: []string{}, NodeTaints: []string{}},
+				},
+			},
+		}
+		m := &clusterv1.Machine{
+			ObjectMeta: metav1.ObjectMeta{Name: "test"},
+			Spec: clusterv1.MachineSpec{
+				Bootstrap: clusterv1.Bootstrap{
+					ConfigRef: clusterv1.ContractVersionedObjectReference{
+						Kind:     "KThreesConfig",
+						Name:     "test",
+						APIGroup: bootstrapv1.GroupVersion.Group,
+					},
+				},
+			},
+		}
+		machineConfigs := map[string]*bootstrapv1.KThreesConfig{m.Name: {}}
+		match := MatchesKThreesBootstrapConfig(machineConfigs, kcp)(m)
+		g.Expect(match).To(BeTrue())
 	})
 
 	t.Run("should match on labels and annotations", func(t *testing.T) {
