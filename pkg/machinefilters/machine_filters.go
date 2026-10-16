@@ -17,8 +17,7 @@ limitations under the License.
 package machinefilters
 
 import (
-	"reflect"
-
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	clusterv1beta1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
@@ -111,7 +110,8 @@ func MatchesKThreesBootstrapConfig(machineConfigs map[string]*bootstrapv1.KThree
 		kcpConfig.Version = ""
 		machineConfig.Spec.Version = ""
 
-		return reflect.DeepEqual(&machineConfig.Spec, kcpConfig)
+		// Semantic equality, as an empty list in the KCP is read back as nil from the KThreesConfig
+		return equality.Semantic.DeepEqual(&machineConfig.Spec, kcpConfig)
 	}
 }
 
