@@ -118,7 +118,15 @@ jobs:
           make release
 
       - name: Release Notes
+        if: ${{ !contains(github.ref_name, '-homelab.') }}
         run: make release-notes
+      # Homelab fork releases: upstream's generator needs the full tag history
+      # and upstream's pull requests.
+      - name: Homelab release notes
+        if: ${{ contains(github.ref_name, '-homelab.') }}
+        run: |
+          mkdir -p _releasenotes
+          echo "Homelab build of cluster-api-k3s from ${RELEASE_TAG}: in-place control plane updates (PR #249)." > "_releasenotes/${RELEASE_TAG}.md"
 
       - name: Create Release
         id: create_release
@@ -128,5 +136,5 @@ jobs:
         with:
           files: out/*
           body_path: _releasenotes/${{ env.RELEASE_TAG }}.md
-          draft: true
-          prerelease: false
+          draft: ${{ !contains(github.ref_name, '-homelab.') }}
+          prerelease: ${{ contains(github.ref_name, '-homelab.') }}
