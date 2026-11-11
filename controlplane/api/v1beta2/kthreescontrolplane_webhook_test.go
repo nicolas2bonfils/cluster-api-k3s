@@ -22,7 +22,6 @@ import (
 	. "github.com/onsi/gomega"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	utilfeature "k8s.io/component-base/featuregate/testing"
 	"k8s.io/utils/ptr"
@@ -193,7 +192,7 @@ func TestKThreesControlPlaneValidateUpdateGateTransition(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		oldObj          runtime.Object
+		oldObj          *KThreesControlPlane
 		newKCP          *KThreesControlPlane
 		wantErr         bool
 		wantErrContains string
@@ -271,13 +270,6 @@ func TestKThreesControlPlaneValidateUpdateGateTransition(t *testing.T) {
 			}(),
 			wantErr:         true,
 			wantErrContains: "only RollingUpdate is supported",
-		},
-		{
-			name:       "rejects wrong old object type",
-			oldObj:     &metav1.PartialObjectMetadata{},
-			newKCP:     newControlPlane(1, zero),
-			wantErr:    true,
-			wantBadReq: true,
 		},
 	}
 
