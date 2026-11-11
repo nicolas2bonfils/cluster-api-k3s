@@ -637,7 +637,7 @@ func TestMigrateManagedFieldsHistoricalLayouts(t *testing.T) {
 			c := &managedFieldsPatchClient{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
 			apiReader := &configMapReader{Reader: c, object: obj.DeepCopy()}
 
-			result, err := MigrateManagedFields(context.Background(), c, apiReader, obj, mainManager, metadataManager)
+			result, err := MigrateManagedFields(context.Background(), c, apiReader, obj, mainManager, metadataManager, nil)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(result).To(Equal(ManagedFieldsMigrationResult{Outcome: tt.wantOutcome}))
 			if tt.wantOutcome == ManagedFieldsMigrationCompleted {
@@ -687,7 +687,7 @@ func TestMigrateManagedFieldsHistoricalLayouts(t *testing.T) {
 			managedFields := obj.GetManagedFields()
 			patchAttempts := c.patchAttempts
 			apiReader.object = obj.DeepCopy()
-			result, err = MigrateManagedFields(context.Background(), c, apiReader, obj, mainManager, metadataManager)
+			result, err = MigrateManagedFields(context.Background(), c, apiReader, obj, mainManager, metadataManager, nil)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(result).To(Equal(ManagedFieldsMigrationResult{Outcome: ManagedFieldsMigrationUnchanged}))
 			g.Expect(c.patchAttempts).To(Equal(patchAttempts))
@@ -737,6 +737,7 @@ func TestMigrateManagedFieldsPreservesSpecEntryTimestampWhenEarlierMainEntryBeco
 		obj,
 		managedFieldsTestMainManager,
 		managedFieldsTestMetadataManager,
+		nil,
 	)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ManagedFieldsMigrationResult{Outcome: ManagedFieldsMigrationCompleted}))
@@ -783,6 +784,7 @@ func TestMigrateManagedFieldsKeepsControllerOwnedAnnotationsWithMainManager(t *t
 		obj,
 		managedFieldsTestMainManager,
 		managedFieldsTestMetadataManager,
+		nil,
 		clusterv1.TemplateClonedFromNameAnnotation,
 		clusterv1.TemplateClonedFromGroupKindAnnotation,
 		clusterv1.UpdateInProgressAnnotation,
@@ -892,6 +894,7 @@ func TestMigrateManagedFieldsRejectsMultipleSpecAPIVersions(t *testing.T) {
 				obj,
 				managedFieldsTestMainManager,
 				managedFieldsTestMetadataManager,
+				nil,
 			)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(result).To(Equal(ManagedFieldsMigrationResult{
@@ -947,6 +950,7 @@ func TestMigrateManagedFieldsRejectsInvalidFieldsV1(t *testing.T) {
 				obj,
 				managedFieldsTestMainManager,
 				managedFieldsTestMetadataManager,
+				nil,
 			)
 			g.Expect(err).To(MatchError(ContainSubstring("FieldsV1")))
 			g.Expect(c.patchAttempts).To(BeZero())
@@ -991,6 +995,7 @@ func TestMigrateManagedFieldsRetriesConflictFromLiveState(t *testing.T) {
 		obj,
 		managedFieldsTestMainManager,
 		managedFieldsTestMetadataManager,
+		nil,
 	)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ManagedFieldsMigrationResult{Outcome: ManagedFieldsMigrationCompleted}))
@@ -1049,6 +1054,7 @@ func TestMigrateManagedFieldsUsesLiveStateBeforeClassifyingMigration(t *testing.
 		cached,
 		managedFieldsTestMainManager,
 		managedFieldsTestMetadataManager,
+		nil,
 	)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ManagedFieldsMigrationResult{Outcome: ManagedFieldsMigrationCompleted}))
@@ -1083,6 +1089,7 @@ func TestMigrateManagedFieldsUsesLiveStateForUnsupportedClassification(t *testin
 		cached,
 		managedFieldsTestMainManager,
 		managedFieldsTestMetadataManager,
+		nil,
 	)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ManagedFieldsMigrationResult{
@@ -1131,6 +1138,7 @@ func TestMigrateManagedFieldsRecomputesUnsupportedAfterConflict(t *testing.T) {
 		obj,
 		managedFieldsTestMainManager,
 		managedFieldsTestMetadataManager,
+		nil,
 	)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ManagedFieldsMigrationResult{
@@ -1157,6 +1165,7 @@ func TestMigrateManagedFieldsReturnsLiveReadError(t *testing.T) {
 		obj,
 		managedFieldsTestMainManager,
 		managedFieldsTestMetadataManager,
+		nil,
 	)
 	g.Expect(err).To(MatchError(ContainSubstring("live read failed")))
 	g.Expect(c.patchAttempts).To(BeZero())
@@ -1184,6 +1193,7 @@ func TestMigrateManagedFieldsLimitsConflictRetries(t *testing.T) {
 		obj,
 		managedFieldsTestMainManager,
 		managedFieldsTestMetadataManager,
+		nil,
 	)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(apierrors.IsConflict(err)).To(BeTrue())
@@ -1270,4 +1280,126 @@ func managedFieldsEntryOwns(t *testing.T, entry *metav1.ManagedFieldsEntry, path
 	_, found, err := unstructured.NestedFieldNoCopy(fields, path...)
 	NewWithT(t).Expect(err).NotTo(HaveOccurred())
 	return found
+}
+
+// An infrastructure provider using controller-runtime's default field manager
+// ("manager") fills InfraMachine fields the template does not set (here a
+// pooled machine's address and SSH key). Only the template's fields move to
+// the control plane manager; the others stay with "manager", so that a later
+// apply of the desired InfraMachine does not see them as removed.
+func TestMigrateManagedFieldsKeepsFieldsOutsideOwnedSpecFields(t *testing.T) {
+	g := NewWithT(t)
+	scheme := runtime.NewScheme()
+	g.Expect(corev1.AddToScheme(scheme)).To(Succeed())
+
+	obj := &corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "related-object",
+			Namespace:       metav1.NamespaceDefault,
+			ResourceVersion: "1",
+			ManagedFields: []metav1.ManagedFieldsEntry{
+				managedFieldsEntry(managedFieldsTestMainManager, metav1.ManagedFieldsOperationApply, managedFieldsTestAPIVersion,
+					`{"f:spec":{"f:pool":{}}}`),
+				managedFieldsEntry(classicManager, metav1.ManagedFieldsOperationUpdate, managedFieldsTestAPIVersion,
+					`{"f:spec":{"f:pool":{},"f:address":{},"f:sshKeyRef":{"f:name":{}},"f:ssh":{"f:port":{},"f:user":{}}}}`),
+			},
+		},
+	}
+	c := &managedFieldsPatchClient{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
+	apiReader := &configMapReader{Reader: c, object: obj.DeepCopy()}
+
+	owned := SpecFieldSet(map[string]interface{}{
+		"spec": map[string]interface{}{
+			"pool": "e2e",
+			"ssh":  map[string]interface{}{"port": int64(22)},
+		},
+	})
+	result, err := MigrateManagedFields(
+		context.Background(),
+		c,
+		apiReader,
+		obj,
+		managedFieldsTestMainManager,
+		managedFieldsTestMetadataManager,
+		owned,
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ManagedFieldsMigrationResult{Outcome: ManagedFieldsMigrationCompleted}))
+
+	mainEntry := findManagedFieldsEntry(obj, managedFieldsTestMainManager, metav1.ManagedFieldsOperationApply)
+	g.Expect(mainEntry).NotTo(BeNil())
+	g.Expect(managedFieldsEntryOwns(t, mainEntry, "f:spec", "f:pool")).To(BeTrue())
+	g.Expect(managedFieldsEntryOwns(t, mainEntry, "f:spec", "f:ssh", "f:port")).To(BeTrue())
+	g.Expect(managedFieldsEntryOwns(t, mainEntry, "f:spec", "f:address")).To(BeFalse())
+	g.Expect(managedFieldsEntryOwns(t, mainEntry, "f:spec", "f:sshKeyRef")).To(BeFalse())
+	g.Expect(managedFieldsEntryOwns(t, mainEntry, "f:spec", "f:ssh", "f:user")).To(BeFalse())
+
+	classicEntry := findManagedFieldsEntry(obj, classicManager, metav1.ManagedFieldsOperationUpdate)
+	g.Expect(classicEntry).NotTo(BeNil())
+	g.Expect(managedFieldsEntryOwns(t, classicEntry, "f:spec", "f:address")).To(BeTrue())
+	g.Expect(managedFieldsEntryOwns(t, classicEntry, "f:spec", "f:sshKeyRef", "f:name")).To(BeTrue())
+	g.Expect(managedFieldsEntryOwns(t, classicEntry, "f:spec", "f:ssh", "f:user")).To(BeTrue())
+	g.Expect(managedFieldsEntryOwns(t, classicEntry, "f:spec", "f:pool")).To(BeFalse())
+	g.Expect(managedFieldsEntryOwns(t, classicEntry, "f:spec", "f:ssh", "f:port")).To(BeFalse())
+
+	// The classic entry keeps fields forever: migrating again must not count
+	// as a migration, or every reconcile would patch and requeue.
+	migrated := obj.GetManagedFields()
+	again, result, err := migrateManagedFields(
+		migrated,
+		managedFieldsTestMainManager,
+		managedFieldsTestMetadataManager,
+		managedFieldsTestAPIVersion,
+		nil,
+		owned,
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.Outcome).To(Equal(ManagedFieldsMigrationUnchanged))
+	g.Expect(again).To(Equal(migrated))
+}
+
+func TestSplitFieldSet(t *testing.T) {
+	g := NewWithT(t)
+	fields := map[string]interface{}{
+		"f:pool":      map[string]interface{}{},
+		"f:address":   map[string]interface{}{},
+		"f:sshKeyRef": map[string]interface{}{"f:name": map[string]interface{}{}},
+		"f:ssh":       map[string]interface{}{"f:port": map[string]interface{}{}, "f:user": map[string]interface{}{}},
+	}
+	allowed := map[string]interface{}{
+		"f:pool":      map[string]interface{}{},
+		"f:sshKeyRef": map[string]interface{}{},
+		"f:ssh":       map[string]interface{}{"f:port": map[string]interface{}{}},
+	}
+	in, out := splitFieldSet(fields, allowed)
+	g.Expect(in).To(Equal(map[string]interface{}{
+		"f:pool":      map[string]interface{}{},
+		"f:sshKeyRef": map[string]interface{}{"f:name": map[string]interface{}{}},
+		"f:ssh":       map[string]interface{}{"f:port": map[string]interface{}{}},
+	}))
+	g.Expect(out).To(Equal(map[string]interface{}{
+		"f:address": map[string]interface{}{},
+		"f:ssh":     map[string]interface{}{"f:user": map[string]interface{}{}},
+	}))
+}
+
+func TestSpecFieldSet(t *testing.T) {
+	g := NewWithT(t)
+	g.Expect(SpecFieldSet(map[string]interface{}{"kind": "X"})).To(BeEmpty())
+	g.Expect(SpecFieldSet(map[string]interface{}{
+		"spec": map[string]interface{}{
+			"pool":  "e2e",
+			"empty": map[string]interface{}{},
+			"list":  []interface{}{"a"},
+			"nested": map[string]interface{}{
+				"leaf": true,
+			},
+		},
+	})).To(Equal(map[string]interface{}{
+		"f:pool":   map[string]interface{}{},
+		"f:empty":  map[string]interface{}{},
+		"f:list":   map[string]interface{}{},
+		"f:nested": map[string]interface{}{"f:leaf": map[string]interface{}{}},
+	}))
 }

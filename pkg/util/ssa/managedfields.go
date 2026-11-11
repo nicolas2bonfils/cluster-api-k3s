@@ -151,6 +151,13 @@ type ManagedFieldsMigrationResult struct {
 }
 
 // MigrateManagedFields transfers historical related-object ownership to the current field managers.
+//
+// ownedSpecFields, in FieldsV1 form relative to spec (see SpecFieldSet), limits
+// which spec fields of the classic "manager" Update entries are transferred to
+// fieldManager: "manager" is also controller-runtime's default field manager,
+// so other controllers' fields may sit in those entries (e.g. an
+// infrastructure provider filling an InfraMachine's spec). Fields outside the
+// set stay with their entry. nil transfers every spec field.
 func MigrateManagedFields(
 	ctx context.Context,
 	c client.Client,
@@ -158,6 +165,7 @@ func MigrateManagedFields(
 	obj client.Object,
 	fieldManager string,
 	metadataFieldManager string,
+	ownedSpecFields map[string]interface{},
 	protectedAnnotations ...string,
 ) (ManagedFieldsMigrationResult, error) {
 	objectKey := client.ObjectKeyFromObject(obj)
@@ -184,6 +192,7 @@ func MigrateManagedFields(
 			metadataFieldManager,
 			objectGVK.GroupVersion().String(),
 			protectedAnnotations,
+			ownedSpecFields,
 		)
 		if err != nil {
 			return err
@@ -224,6 +233,13 @@ type managedFieldsMigration struct {
 	specByVersion        map[string]map[string]interface{}
 	metadataFields       map[string]interface{}
 	mainMetadataFields   map[string]interface{}
+	// ownedSpecFields limits the spec fields taken from classic entries; nil
+	// takes them all.
+	ownedSpecFields map[string]interface{}
+	// classicSpecVersions are the API versions of classic entries with spec
+	// fields, moved or kept: spec ownership spread over several versions is
+	// ambiguous whatever the filter keeps.
+	classicSpecVersions map[string]struct{}
 }
 
 func migrateManagedFields(
@@ -232,12 +248,14 @@ func migrateManagedFields(
 	metadataFieldManager string,
 	objectAPIVersion string,
 	protectedAnnotations []string,
+	ownedSpecFields map[string]interface{},
 ) ([]metav1.ManagedFieldsEntry, ManagedFieldsMigrationResult, error) {
 	migration, err := collectManagedFieldsMigration(
 		originalManagedFields,
 		fieldManager,
 		metadataFieldManager,
 		protectedAnnotationFieldNames(protectedAnnotations),
+		ownedSpecFields,
 	)
 	if err != nil {
 		return nil, ManagedFieldsMigrationResult{}, err
@@ -277,6 +295,7 @@ func collectManagedFieldsMigration(
 	fieldManager string,
 	metadataFieldManager string,
 	protectedAnnotationFields map[string]struct{},
+	ownedSpecFields map[string]interface{},
 ) (*managedFieldsMigration, error) {
 	migration := &managedFieldsMigration{
 		entries:            make([]managedFieldsMigrationEntry, len(originalManagedFields)),
@@ -284,6 +303,7 @@ func collectManagedFieldsMigration(
 		specByVersion:      map[string]map[string]interface{}{},
 		metadataFields:     map[string]interface{}{},
 		mainMetadataFields: map[string]interface{}{},
+		ownedSpecFields:    ownedSpecFields,
 	}
 
 	for i := range originalManagedFields {
@@ -525,6 +545,24 @@ func (m *managedFieldsMigration) moveClassicSpecFields(index int) error {
 	if !found {
 		return nil
 	}
+	if m.classicSpecVersions == nil {
+		m.classicSpecVersions = map[string]struct{}{}
+	}
+	m.classicSpecVersions[entry.entry.APIVersion] = struct{}{}
+	if m.ownedSpecFields != nil {
+		var keptFields map[string]interface{}
+		specFields, keptFields = splitFieldSet(specFields, m.ownedSpecFields)
+		if len(keptFields) > 0 {
+			if err := mergeNestedFieldSet(entry.fields, keptFields, "f:spec"); err != nil {
+				return errors.Wrap(err, "failed to keep spec managed fields")
+			}
+		}
+		if len(specFields) == 0 {
+			// Nothing to move: leave the entry as it is, or every
+			// reconcile would rewrite it and count as a migration.
+			return nil
+		}
+	}
 	if m.specByVersion[entry.entry.APIVersion] == nil {
 		m.specByVersion[entry.entry.APIVersion] = map[string]interface{}{}
 	}
@@ -555,6 +593,9 @@ func (m *managedFieldsMigration) destinationVersion() (string, bool, bool) {
 		destinationVersions[version] = struct{}{}
 	}
 	for version := range m.mainVersions {
+		destinationVersions[version] = struct{}{}
+	}
+	for version := range m.classicSpecVersions {
 		destinationVersions[version] = struct{}{}
 	}
 	if len(destinationVersions) > 1 {
@@ -863,4 +904,55 @@ func hasFieldsManagedBy(obj client.Object, manager string) bool {
 		}
 	}
 	return false
+}
+
+// SpecFieldSet returns the FieldsV1 set, relative to spec, of the fields an
+// object sets in its spec: every map key, lists and scalars as leaves. Used
+// as the ownedSpecFields of MigrateManagedFields from a desired object.
+func SpecFieldSet(obj map[string]interface{}) map[string]interface{} {
+	spec, ok := obj["spec"].(map[string]interface{})
+	if !ok {
+		return map[string]interface{}{}
+	}
+	return fieldSetOf(spec)
+}
+
+func fieldSetOf(value map[string]interface{}) map[string]interface{} {
+	set := map[string]interface{}{}
+	for key, v := range value {
+		if child, ok := v.(map[string]interface{}); ok && len(child) > 0 {
+			set["f:"+key] = fieldSetOf(child)
+			continue
+		}
+		set["f:"+key] = map[string]interface{}{}
+	}
+	return set
+}
+
+// splitFieldSet splits a FieldsV1 set into the part within allowed and the
+// rest. A leaf of allowed takes the whole subtree below it; a subtree of the
+// set under a key allowed with children is split recursively.
+func splitFieldSet(fields, allowed map[string]interface{}) (in, out map[string]interface{}) {
+	in, out = map[string]interface{}{}, map[string]interface{}{}
+	for key, value := range fields {
+		allowedValue, isAllowed := allowed[key]
+		if !isAllowed {
+			out[key] = value
+			continue
+		}
+		allowedChildren, _ := allowedValue.(map[string]interface{})
+		children, _ := value.(map[string]interface{})
+		if len(allowedChildren) == 0 || len(children) == 0 {
+			in[key] = value
+			continue
+		}
+		childIn, childOut := splitFieldSet(children, allowedChildren)
+		if len(childIn) > 0 {
+			in[key] = childIn
+		}
+		if len(childOut) > 0 {
+			out[key] = childOut
+		}
+	}
+	return in, out
 }
