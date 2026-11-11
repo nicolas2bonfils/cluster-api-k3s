@@ -110,6 +110,7 @@ var _ = Describe("related object managedFields migration", func() {
 				object,
 				kcpManagerName,
 				kcpMetadataManagerName,
+				nil,
 			)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Outcome).To(Equal(ssa.ManagedFieldsMigrationCompleted))
@@ -167,6 +168,7 @@ var _ = Describe("related object managedFields migration", func() {
 				object,
 				kcpManagerName,
 				kcpMetadataManagerName,
+				nil,
 			)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Outcome).To(Equal(ssa.ManagedFieldsMigrationUnchanged))

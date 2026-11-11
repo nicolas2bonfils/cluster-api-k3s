@@ -24,11 +24,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	controlplanev1 "github.com/k3s-io/cluster-api-k3s/controlplane/api/v1beta2"
 	pkgcontract "github.com/k3s-io/cluster-api-k3s/pkg/contract"
 	"github.com/k3s-io/cluster-api-k3s/pkg/k3s"
+	"github.com/k3s-io/cluster-api-k3s/pkg/k3s/desiredstate"
 	"github.com/k3s-io/cluster-api-k3s/pkg/util/ssa"
 )
 
@@ -76,6 +78,22 @@ func (r *KThreesControlPlaneReconciler) reconcileRelatedObjectManagedFields(
 		}
 
 		if infraMachine, ok := controlPlane.InfraResources[machineName]; ok {
+			// Only the spec fields the control plane sets (from the
+			// infrastructure template) move from classic "manager" entries:
+			// an infrastructure provider using controller-runtime's default
+			// field manager fills other fields under the same name.
+			// Without the template (e.g. not readable yet), every spec field
+			// moves, as before: at worst an in-place update is refused later,
+			// the replacement path stays as safe as it was.
+			var ownedSpecFields map[string]interface{}
+			if desiredInfraMachine, err := desiredstate.ComputeDesiredInfraMachine(
+				ctx, r.Client, controlPlane.KCP, controlPlane.Cluster, infraMachine.GetName(), infraMachine,
+			); err != nil {
+				ctrl.LoggerFrom(ctx).Info("Cannot compute the desired InfrastructureMachine, migrating all its classic spec fields",
+					"InfrastructureMachine", klog.KObj(infraMachine), "error", err.Error())
+			} else {
+				ownedSpecFields = ssa.SpecFieldSet(desiredInfraMachine.Object)
+			}
 			result, err := ssa.MigrateManagedFields(
 				ctx,
 				r.Client,
@@ -83,6 +101,7 @@ func (r *KThreesControlPlaneReconciler) reconcileRelatedObjectManagedFields(
 				infraMachine,
 				kcpManagerName,
 				kcpMetadataManagerName,
+				ownedSpecFields,
 				relatedObjectMainManagerAnnotations...,
 			)
 			if err != nil {
@@ -125,6 +144,7 @@ func (r *KThreesControlPlaneReconciler) reconcileRelatedObjectManagedFields(
 			kthreesConfig,
 			kcpManagerName,
 			kcpMetadataManagerName,
+			nil, // The control plane sets the whole KThreesConfig spec.
 			relatedObjectMainManagerAnnotations...,
 		)
 		if err != nil {
