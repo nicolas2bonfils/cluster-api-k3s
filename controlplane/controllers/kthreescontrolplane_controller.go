@@ -652,7 +652,7 @@ func (r *KThreesControlPlaneReconciler) reconcileExternalReference(ctx context.C
 	}
 
 	obj.SetOwnerReferences(util.EnsureOwnerRef(obj.GetOwnerReferences(), metav1.OwnerReference{
-		APIVersion: clusterv1beta1.GroupVersion.String(),
+		APIVersion: clusterv1.GroupVersion.String(),
 		Kind:       "Cluster",
 		Name:       cluster.Name,
 		UID:        cluster.UID,
